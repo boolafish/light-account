@@ -2,17 +2,23 @@
 pragma solidity ^0.8.21;
 
 import "forge-std/Test.sol";
+import "forge-std/console2.sol";
+import "forge-std/console.sol";
 
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 import {EntryPoint} from "account-abstraction/core/EntryPoint.sol";
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
+import {IStakeManager} from "account-abstraction/interfaces/IStakeManager.sol";
 import {UserOperation} from "account-abstraction/interfaces/UserOperation.sol";
 import {SimpleAccount} from "account-abstraction/samples/SimpleAccount.sol";
 
 import {LightAccount} from "../src/LightAccount.sol";
 import {LightAccountFactory} from "../src/LightAccountFactory.sol";
+
+import {Opcode} from "./Opcode.sol";
+import {EIP4337Check} from "./EIP4337Check.sol";
 
 contract LightAccountTest is Test {
     using stdStorage for StdStorage;
@@ -31,6 +37,26 @@ contract LightAccountTest is Test {
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event Initialized(uint64 version);
 
+
+    // From account-abstraction, IStakeManager.sol
+    struct StakeInfo {
+        uint256 stake;
+        uint256 unstakeDelaySec;
+    }
+    // From account-abstraction, IEntryPoint.sol
+    struct ReturnInfo {
+        uint256 preOpGas;
+        uint256 prefund;
+        bool sigFailed;
+        uint48 validAfter;
+        uint48 validUntil;
+        bytes paymasterContext;
+    }
+    // From account-abstraction, IEntryPoint.sol
+    error ValidationResult(ReturnInfo returnInfo,
+        StakeInfo senderInfo, StakeInfo factoryInfo, StakeInfo paymasterInfo);
+
+
     function setUp() public {
         eoaAddress = vm.addr(EOA_PRIVATE_KEY);
         entryPoint = new EntryPoint();
@@ -43,7 +69,18 @@ contract LightAccountTest is Test {
 
     function testExecuteCanBeCalledByOwner() public {
         vm.prank(eoaAddress);
+        vm.startStateDiffRecording();
         account.execute(address(lightSwitch), 0, abi.encodeCall(LightSwitch.turnOn, ()));
+        Vm.AccountAccess[] memory calls = vm.stopAndReturnStateDiff();
+        console2.log("qq");
+        for (uint256 i = 0; i < calls.length; i++) {
+            Vm.StorageAccess[] memory accesses = calls[i].storageAccesses;
+            for (uint256 j = 0; j < accesses.length; j++) {
+                console.logAddress(accesses[j].account);
+                console.logBytes32(accesses[j].slot);
+                // console2.log("%s, %s", accesses[j].account, accesses[j].slot);
+            }
+        }
         assertTrue(lightSwitch.on());
     }
 
@@ -52,6 +89,44 @@ contract LightAccountTest is Test {
         account.execute(address(lightSwitch), 1 ether, abi.encodeCall(LightSwitch.turnOn, ()));
         assertTrue(lightSwitch.on());
         assertEq(address(lightSwitch).balance, 1 ether);
+    }
+
+    function testRecordOpcode() public {
+        UserOperation memory op =
+            _getSignedOp(address(lightSwitch), abi.encodeCall(LightSwitch.turnOn, ()), EOA_PRIVATE_KEY);
+        // UserOperation[] memory ops = new UserOperation[](1);
+        // ops[0] = op;
+
+        vm.startOpcodeRecording();
+
+        // `simulateValidation()` will eventually call `IAccount(sender).validateUserOp()`.
+        // Thus, using this and then check forbidden opcodes and storage are not touched.
+        // The `simulateValidation()` function always reverts and "ValidationResult" means
+        // the simulation passed validation.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IEntryPoint.ValidationResult.selector,
+                ReturnInfo({
+                    preOpGas: 16850660,
+                    prefund: 12884901888,
+                    sigFailed: false,
+                    validAfter: 0,
+                    validUntil: 281474976710655,
+                    paymasterContext: bytes("")
+                }),
+                StakeInfo({ stake: 0, unstakeDelaySec: 0 }),
+                StakeInfo({ stake: 0, unstakeDelaySec: 0 }),
+                StakeInfo({ stake: 0, unstakeDelaySec: 0 })
+            )
+        );
+        entryPoint.simulateValidation(op);
+
+        Vm.OpcodeAccess[] memory accesses = vm.stopAndReturnOpcodeRecording();
+
+        // for (uint256 i = 0; i < accesses.length; ++i) {
+        //     console.log(Opcode.getOpcode(accesses[i].opcode));
+        // }
+        assertTrue(EIP4337Check.checkForbiddenOpcodes(accesses, op));
     }
 
     function testExecuteCanBeCalledByEntryPointWithExternalOwner() public {

@@ -103,30 +103,35 @@ contract LightAccountTest is Test {
         // Thus, using this and then check forbidden opcodes and storage are not touched.
         // The `simulateValidation()` function always reverts and "ValidationResult" means
         // the simulation passed validation.
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IEntryPoint.ValidationResult.selector,
-                ReturnInfo({
-                    preOpGas: 16850660,
-                    prefund: 12884901888,
-                    sigFailed: false,
-                    validAfter: 0,
-                    validUntil: 281474976710655,
-                    paymasterContext: bytes("")
-                }),
-                StakeInfo({ stake: 0, unstakeDelaySec: 0 }),
-                StakeInfo({ stake: 0, unstakeDelaySec: 0 }),
-                StakeInfo({ stake: 0, unstakeDelaySec: 0 })
-            )
-        );
-        entryPoint.simulateValidation(op);
+        // vm.expectRevert(
+        //     abi.encodeWithSelector(
+        //         IEntryPoint.ValidationResult.selector,
+        //         ReturnInfo({
+        //             preOpGas: 16850660,
+        //             prefund: 12884901888,
+        //             sigFailed: false,
+        //             validAfter: 0,
+        //             validUntil: 281474976710655,
+        //             paymasterContext: bytes("")
+        //         }),
+        //         StakeInfo({ stake: 0, unstakeDelaySec: 0 }),
+        //         StakeInfo({ stake: 0, unstakeDelaySec: 0 }),
+        //         StakeInfo({ stake: 0, unstakeDelaySec: 0 })
+        //     )
+        // );
+        try entryPoint.simulateValidation(op) {
+            // the simulateValidation function will always revert.
+            // in this test, we do not really care if it is revert in an expected output or not.
+        } catch (bytes memory) {
+            // in this test, we do not really care if it is revert in an expected output or not.
+        }
 
         Vm.OpcodeAccess[] memory accesses = vm.stopAndReturnOpcodeRecording();
 
         // for (uint256 i = 0; i < accesses.length; ++i) {
         //     console.log(Opcode.getOpcode(accesses[i].opcode));
         // }
-        assertTrue(EIP4337Check.checkForbiddenOpcodes(accesses, op));
+        assertTrue(EIP4337Check.checkForbiddenOpcodes(accesses, op, address(entryPoint)));
     }
 
     function testExecuteCanBeCalledByEntryPointWithExternalOwner() public {

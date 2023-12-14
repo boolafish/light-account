@@ -122,8 +122,12 @@ contract LightAccountTest is Test {
         try entryPoint.simulateValidation(userOp) {
             // the simulateValidation function will always revert.
             // in this test, we do not really care if it is revert in an expected output or not.
-        } catch (bytes memory) {
+        } catch Error(string memory reason) {
+            // This is executed if a revert was thrown with a reason
+            console2.log("ERR Str: ", reason);
+        } catch (bytes memory err) {
             // in this test, we do not really care if it is revert in an expected output or not.
+            console2.log("ERR: ", string(err));
         }
 
         Vm.DebugStep[] memory steps = vm.stopAndReturnDebugTraceRecording();

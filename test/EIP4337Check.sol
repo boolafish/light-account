@@ -7,15 +7,15 @@ import "forge-std/console2.sol";
 library EIP4337Check {
 
     function checkForbiddenOpcodes(
-        Vm.OpcodeAccess[] memory opcodes,
+        Vm.DebugStep[] memory debugSteps,
         UserOperation memory userOp,
         address entryPoint
     ) internal pure returns (bool) {
-        Vm.OpcodeAccess[] memory senderOpcodes = new Vm.OpcodeAccess[](opcodes.length);
-        uint senderOpcodesLen = 0;
+        Vm.DebugStep[] memory senderSteps = new Vm.DebugStep[](debugSteps.length);
+        uint128 senderStepsLen = 0;
 
         address currentAddr;
-        for (uint256 i = 0; i < opcodes.length; i++) {
+        for (uint256 i = 0; i < debugSteps.length; i++) {
             // We start analyze the forbidden opcodes from depth > 2
             // Note that in forge test, the "test" itself wiill be depth 1. So the EntryPoint will be depth 2.
             //
@@ -23,10 +23,10 @@ library EIP4337Check {
             // the EntryPoint contract with `this.xxx()` so we will need to filter those as well.
             // The code here group the opcodes by addresses, and then we only check the
             // forbidden opcodes on those addresses we are interested.
-            if (opcodes[i].depth == 2) {
-                uint8 opcode = opcodes[i].opcode;
+            if (debugSteps[i].depth == 2) {
+                uint8 opcode = debugSteps[i].opcode;
                 if (opcode == 0xF1 || opcode == 0xFA) { // CALL and STATICCALL
-                    currentAddr = address(uint160(opcodes[i].stackInputs[1]));
+                    currentAddr = address(uint160(debugSteps[i].stack[1]));
                 }
 
                 // ignore all opcodes on depth 1 and do not add to the `addrToOpcodes` mapping
@@ -34,20 +34,20 @@ library EIP4337Check {
             }
 
             if (currentAddr == userOp.sender) {
-                senderOpcodes[senderOpcodesLen++] = opcodes[i];
+                senderSteps[senderStepsLen++] = debugSteps[i];
             }
         }
 
         // Reset the senderOpcodes to correct length
         assembly {
-            mstore(senderOpcodes, senderOpcodesLen)
+            mstore(senderSteps, senderStepsLen)
         }
 
-        if (!validateForbiddenOpcodes(senderOpcodes)) {
+        if (!validateForbiddenOpcodes(senderSteps)) {
             console2.log("Invalid Sender Opcodes (validateUserOp)");
             return false;
         }
-        if (!validateCall(senderOpcodes, entryPoint, true)) {
+        if (!validateCall(senderSteps, entryPoint, true)) {
             console2.log("Call with non zero value (validateUserOp)");
             return false;
         }
@@ -63,12 +63,12 @@ library EIP4337Check {
      * 🚧 4. cannot call EntryPoint’s methods, except depositFor (to avoid recursion)
      */
     function validateCall(
-        Vm.OpcodeAccess[] memory opcodes,
+        Vm.DebugStep[] memory debugSteps,
         address entryPoint,
         bool isFromAccount
     ) private pure returns (bool) {
-        for (uint256 i = 0; i < opcodes.length; i++) {
-            if (!isCallWithoutZeroValue(opcodes[i], entryPoint, isFromAccount)) {
+        for (uint256 i = 0; i < debugSteps.length; i++) {
+            if (!isCallWithoutZeroValue(debugSteps[i], entryPoint, isFromAccount)) {
                 return false;
             }
         }
@@ -79,18 +79,18 @@ library EIP4337Check {
      * May not invokes any forbidden opcodes
      * Must not use GAS opcode (unless followed immediately by one of { CALL, DELEGATECALL, CALLCODE, STATICCALL }.)
      */
-    function validateForbiddenOpcodes(Vm.OpcodeAccess[] memory opcodes) private pure returns (bool) {
-        for (uint256 i = 0; i < opcodes.length; i++) {
-            uint8 opcode = opcodes[i].opcode;
+    function validateForbiddenOpcodes(Vm.DebugStep[] memory debugSteps) private pure returns (bool) {
+        for (uint256 i = 0; i < debugSteps.length; i++) {
+            uint8 opcode = debugSteps[i].opcode;
             if (isForbiddenOpcode(opcode)) {
                 // exception case for GAS opcode
-                if (opcode == 0x5A && i < opcodes.length -1) {
-                    if (!isValidNextOpcodeOfGas(opcodes[i+1].opcode)) {
-                        console2.log("fobidden GAS op-code, next opcode: ", opcodes[i+1].opcode, "depth: ", opcodes[i].depth);
+                if (opcode == 0x5A && i < debugSteps.length -1) {
+                    if (!isValidNextOpcodeOfGas(debugSteps[i+1].opcode)) {
+                        console2.log("fobidden GAS op-code, next opcode: ", debugSteps[i+1].opcode, "depth: ", debugSteps[i].depth);
                         return false;
                     }
                 } else {
-                    console2.log("fobidden op-code: ", opcode, "depth: ", opcodes[i].depth);
+                    console2.log("fobidden op-code: ", opcode, "depth: ", debugSteps[i].depth);
                     return false;
                 }
             }
@@ -123,14 +123,14 @@ library EIP4337Check {
     }
 
     function isCallWithoutZeroValue(
-        Vm.OpcodeAccess memory opcode,
+        Vm.DebugStep memory debugStep,
         address entryPoint,
         bool isFromAccount
     ) private pure returns (bool) {
-        uint8 op = opcode.opcode;
+        uint8 op = debugStep.opcode;
         if (op == 0xF1 /*CALL*/ || op == 0xF2 /*CALLCODE*/) {
-            address dest = address(uint160(opcode.stackInputs[1]));
-            uint256 value = opcode.stackInputs[2];
+            address dest = address(uint160(debugStep.stack[1]));
+            uint256 value = debugStep.stack[2];
             // exception, allow account to call entrypoint with value
             if (value > 0 && (isFromAccount && dest != entryPoint)) {
                 return false;

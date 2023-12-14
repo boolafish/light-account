@@ -92,12 +92,12 @@ contract LightAccountTest is Test {
     }
 
     function testRecordOpcode() public {
-        UserOperation memory op =
+        UserOperation memory userOp =
             _getSignedOp(address(lightSwitch), abi.encodeCall(LightSwitch.turnOn, ()), EOA_PRIVATE_KEY);
         // UserOperation[] memory ops = new UserOperation[](1);
         // ops[0] = op;
 
-        vm.startOpcodeRecording();
+        vm.startDebugTraceRecording();
 
         // `simulateValidation()` will eventually call `IAccount(sender).validateUserOp()`.
         // Thus, using this and then check forbidden opcodes and storage are not touched.
@@ -119,19 +119,19 @@ contract LightAccountTest is Test {
         //         StakeInfo({ stake: 0, unstakeDelaySec: 0 })
         //     )
         // );
-        try entryPoint.simulateValidation(op) {
+        try entryPoint.simulateValidation(userOp) {
             // the simulateValidation function will always revert.
             // in this test, we do not really care if it is revert in an expected output or not.
         } catch (bytes memory) {
             // in this test, we do not really care if it is revert in an expected output or not.
         }
 
-        Vm.OpcodeAccess[] memory accesses = vm.stopAndReturnOpcodeRecording();
+        Vm.DebugStep[] memory steps = vm.stopAndReturnDebugTraceRecording();
 
         // for (uint256 i = 0; i < accesses.length; ++i) {
         //     console.log(Opcode.getOpcode(accesses[i].opcode));
         // }
-        assertTrue(EIP4337Check.checkForbiddenOpcodes(accesses, op, address(entryPoint)));
+        assertTrue(EIP4337Check.checkForbiddenOpcodes(steps, userOp, address(entryPoint)));
     }
 
     function testExecuteCanBeCalledByEntryPointWithExternalOwner() public {

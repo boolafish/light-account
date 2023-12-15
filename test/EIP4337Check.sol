@@ -55,6 +55,10 @@ library EIP4337Check {
             console2.log("EXTCODEHASH, EXTCODELENGTH, EXTCODECOPY may not access address with no code");
             return false;
         }
+        if (!validateCreate2(senderSteps, userOp)) {
+            console2.log("allow at most one CREATE2 opcode call only when op.initcode.length != 0");
+            return false;
+        }
 
         return true;
     }
@@ -142,6 +146,27 @@ library EIP4337Check {
 
             address addr = address(uint160(debugSteps[i].stack[0]));
             if (isEmptyCodeAddress(addr)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function validateCreate2(
+        Vm.DebugStep[] memory debugSteps,
+        UserOperation memory userOp
+    ) private pure returns (bool) {
+        uint create2Cnt = 0;
+        for (uint256 i = 0; i < debugSteps.length; i++) {
+            if (debugSteps[i].opcode == 0xF5 /*CREATE2*/) {
+                create2Cnt += 1;
+            }
+
+            if (create2Cnt == 1 && userOp.initCode.length == 0) {
+                return false;
+            }
+
+            if (create2Cnt > 1) {
                 return false;
             }
         }

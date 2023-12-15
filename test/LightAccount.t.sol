@@ -125,9 +125,24 @@ contract LightAccountTest is Test {
         } catch Error(string memory reason) {
             // This is executed if a revert was thrown with a reason
             console2.log("ERR Str: ", reason);
-        } catch (bytes memory err) {
-            // in this test, we do not really care if it is revert in an expected output or not.
-            console2.log("ERR: ", string(err));
+        } catch (bytes memory reason) {
+            if (reason.length < 4 && bytes4(reason) != ValidationResult.selector) {
+                assertTrue(false, "unexpected errored out");
+            }
+
+            // // Create a new bytes memory variable for the sliced part
+            // bytes memory slicedReason = new bytes(reason.length - 4);
+
+            // // Copy the sliced part into the new variable
+            // for (uint i = 4; i < reason.length; i++) {
+            //     slicedReason[i - 4] = reason[i];
+            // }
+            // (
+            //     ReturnInfo memory returnInfo,
+            //     StakeInfo memory senderInfo,
+            //     StakeInfo memory factoryInfo,
+            //     StakeInfo memory paymasterInfo
+            // ) = abi.decode(slicedReason, (ReturnInfo, StakeInfo, StakeInfo, StakeInfo));
         }
 
         Vm.DebugStep[] memory steps = vm.stopAndReturnDebugTraceRecording();
@@ -135,7 +150,9 @@ contract LightAccountTest is Test {
         // for (uint256 i = 0; i < accesses.length; ++i) {
         //     console.log(Opcode.getOpcode(accesses[i].opcode));
         // }
-        assertTrue(EIP4337Check.checkForbiddenOpcodes(steps, userOp, address(entryPoint)));
+        assertTrue(
+            EIP4337Check.validateUserOp(steps, userOp, entryPoint)
+        );
     }
 
     function testExecuteCanBeCalledByEntryPointWithExternalOwner() public {

@@ -2,14 +2,16 @@ pragma solidity ^0.8.0;
 
 import {Vm} from "forge-std/Vm.sol";
 import {UserOperation} from "account-abstraction/interfaces/UserOperation.sol";
+import {EntryPoint} from "account-abstraction/core/EntryPoint.sol";
+import {IStakeManager} from "account-abstraction/interfaces/IStakeManager.sol";
 import "forge-std/console2.sol";
 
 library EIP4337Check {
 
-    function checkForbiddenOpcodes(
+    function validateUserOp(
         Vm.DebugStep[] memory debugSteps,
         UserOperation memory userOp,
-        address entryPoint
+        EntryPoint entryPoint
     ) internal view returns (bool) {
         Vm.DebugStep[] memory senderSteps = new Vm.DebugStep[](debugSteps.length);
         uint128 senderStepsLen = 0;
@@ -47,7 +49,7 @@ library EIP4337Check {
             console2.log("Invalid Sender Opcodes (validateUserOp)");
             return false;
         }
-        if (!validateCall(senderSteps, entryPoint, true)) {
+        if (!validateCall(senderSteps, address(entryPoint), true)) {
             console2.log("Breaching Call Limitation (validateUserOp)");
             return false;
         }
@@ -60,7 +62,145 @@ library EIP4337Check {
             return false;
         }
 
+        if(!validateStorage(senderSteps, userOp, entryPoint)) {
+            console2.log("Storage access rule breached");
+            return false;
+        }
+
         return true;
+    }
+
+    function validateStorage(
+        Vm.DebugStep[] memory debugSteps,
+        UserOperation memory userOp,
+        EntryPoint entryPoint
+    ) private view returns (bool) {
+        address factory = getFactoryAddr(userOp);
+        IStakeManager.StakeInfo memory factoryStakeInfo = getStakeInfo(factory, entryPoint);
+
+        address paymaster = getPaymasterAddr(userOp);
+        IStakeManager.StakeInfo memory paymasterStakeInfo = getStakeInfo(paymaster, entryPoint);
+
+        bytes32[] memory associatedSlots = findAddressAssociatedSlots(userOp.sender, debugSteps);
+
+        for (uint i=0 ; i < debugSteps.length; i++) {
+            Vm.DebugStep memory debugStep = debugSteps[i];
+            uint8 opcode = debugSteps[i].opcode;
+            if (opcode != 0x54 /*SLOAD*/ && opcode != 0x55 /*SSTORE*/) {
+                continue;
+            }
+
+
+            // self storage (of factory/paymaster, respectively) is allowed,
+            // but only if self entity is staked
+            //
+            // note: this implementation only take into the original EIP-4337 spec.
+            // There are slight difference with the draft spec from eth-infinitism:
+            // https://github.com/eth-infinitism/account-abstraction/blob/develop/eip/EIPS/eip-aa-rules.md#storage-rules
+            // see: STO-032, and STO-033
+            if (
+                debugStep.contractAddr == factory
+                && factoryStakeInfo.stake > 0
+                && factoryStakeInfo.unstakeDelaySec > 0
+            ) {
+                continue;
+            }
+            if (
+                debugStep.contractAddr == paymaster
+                && paymasterStakeInfo.stake > 0
+                && paymasterStakeInfo.unstakeDelaySec > 0
+            ) {
+                continue;
+            }
+
+            // account storage access is allowed, including address associated storage
+            if (debugStep.contractAddr == userOp.sender) {
+                // Slots of contract A address itself
+                continue;
+            }
+
+            bytes32 key = bytes32(debugStep.stack[0]);
+
+            bool isAssociated;
+            for (uint j=0 ; j < associatedSlots.length; j++) {
+                if (key == associatedSlots[j]) {
+                    console2.log("found associated slot on account: ", debugStep.contractAddr);
+                    console2.logBytes32(key);
+                    isAssociated = true;
+                    break;
+                }
+            }
+            if (!isAssociated) {
+                console2.log("non-associated slot detected on account: ", debugStep.contractAddr);
+                console2.logBytes32(key);
+                console2.log("sender address: ", userOp.sender);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    function findAddressAssociatedSlots(
+        address addr,
+        Vm.DebugStep[] memory debugSteps
+    ) private pure returns (bytes32[] memory) {
+        bytes32[] memory associatedSlots = new bytes32[](debugSteps.length * 128);
+        uint slotLen = 0;
+
+        for (uint256 i = 0; i < debugSteps.length; i++) {
+            uint8 opcode = debugSteps[i].opcode;
+
+            if (opcode != 0x20 /*SHA3*/) {
+                continue;
+            }
+
+            // find the inputs for the KECCAK256
+            bytes memory input = new bytes(debugSteps[i].memoryData.length);
+            for(uint j = 0; j < debugSteps[i].memoryData.length; j++) {
+                input[j] = bytes1(debugSteps[i].memoryData[j]);
+            }
+
+            // console2.log("searching associated slot: ", addr);
+            // console2.logBytes(input);
+            address inputStartAddr = address(uint160(uint256(bytes32(input))));
+            if (input.length >= 20 && inputStartAddr == addr) {
+                // console2.log("found associated slot: ", addr);
+                // console2.logBytes(input);
+                // Slots of type keccak256(A || X) + n, n in range [0, 128]
+                for (uint j = 0; j < 128; j++) {
+                    unchecked {
+                        associatedSlots[slotLen++] = bytes32(uint256(keccak256(input)) + j);
+                    }
+                }
+            }
+        }
+
+        // Reset to correct length
+        assembly {
+            mstore(associatedSlots, slotLen)
+        }
+
+        return associatedSlots;
+    }
+
+    function getStakeInfo(address addr, EntryPoint entryPoint) internal view returns (IStakeManager.StakeInfo memory) {
+        IStakeManager.DepositInfo memory depositInfo = entryPoint.getDepositInfo(addr);
+
+        return IStakeManager.StakeInfo({
+            stake: depositInfo.stake,
+            unstakeDelaySec: depositInfo.unstakeDelaySec
+        });
+    }
+
+    function getFactoryAddr(UserOperation memory userOp) private pure returns (address) {
+        bytes memory initCode = userOp.initCode;
+        return initCode.length >= 20 ? address(bytes20(initCode)) : address(0);
+    }
+
+    function getPaymasterAddr(UserOperation memory userOp) private pure returns (address) {
+        bytes memory pData = userOp.paymasterAndData;
+        return pData.length >= 20 ? address(bytes20(pData)) : address(0);
     }
 
     /**

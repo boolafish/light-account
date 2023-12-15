@@ -33,7 +33,7 @@ library EIP4337Check {
                 continue;
             }
 
-            if (currentAddr == userOp.sender) {
+            if (debugSteps[i].depth > 2 && currentAddr == userOp.sender) {
                 senderSteps[senderStepsLen++] = debugSteps[i];
             }
         }
@@ -58,7 +58,7 @@ library EIP4337Check {
     /**
      * Limitation on “CALL” opcodes (CALL, DELEGATECALL, CALLCODE, STATICCALL):
      * ✅ 1. must not use value (except from account to the entrypoint)
-     * ❌ 2. must not revert with out-of-gas  (🙅‍♂️ technical issue, not supporting now)
+     * ✅ 2. must not revert with out-of-gas
      * ✅ 3. destination address must have code (EXTCODESIZE>0) or be a standard Ethereum precompile defined at addresses from 0x01 to 0x09
      * ✅ 4. cannot call EntryPoint’s methods, except depositTo (to avoid recursion)
      */
@@ -68,6 +68,15 @@ library EIP4337Check {
         bool isFromAccount
     ) private view returns (bool) {
         for (uint256 i = 0; i < debugSteps.length; i++) {
+            // the current mechanism will only record the instruction result on the last opcode
+            // that failed. It will not go all the way back to the call related opcode so
+            // need to call this before filtering
+            if (isCallOutOfGas(debugSteps[i])) { // TODO: checked, not working as expected :(
+                console2.log("must not revert with out-of-gas");
+                return false;
+            }
+
+            // we only care about OPCODES related to calls
             uint8 op = debugSteps[i].opcode;
             if (op != 0xF1 /*CALL*/
                 && op != 0xF2 /*CALLCODE*/
@@ -79,10 +88,6 @@ library EIP4337Check {
 
             if (isCallWithValue(debugSteps[i], entryPoint, isFromAccount)) {
                 console2.log("must not use value (except from account to the entrypoint)");
-                return false;
-            }
-            if (isCallOutOfGas(debugSteps[i])) { // TODO: checked, not working as expected :(
-                console2.log("must not revert with out-of-gas");
                 return false;
             }
             if (!isPrecompile(debugSteps[i]) && isEmptyCode(debugSteps[i])) {
@@ -166,7 +171,8 @@ library EIP4337Check {
     function isCallOutOfGas(Vm.DebugStep memory debugStep) private pure returns (bool) {
         // https://github.com/bluealloy/revm/blob/5a47ae0d2bb0909cc70d1b8ae2b6fc721ab1ca7d/crates/interpreter/src/instruction_result.rs#L23
         if (debugStep.instructionResult != 0x00) {
-            console2.log("instructionResult: ", debugStep.instructionResult);
+            console2.log("[isCallOutOfGas] instructionResult: ", debugStep.instructionResult);
+            console2.log("[isCallOutOfGas] depth: ", debugStep.depth);
         }
         return debugStep.instructionResult == 0x50;
     }
@@ -203,10 +209,10 @@ library EIP4337Check {
         uint8[] memory memoryData = debugStep.memoryData;
         bytes4 selector;
 
-        // Inline assembly is used for low-level manipulation of data
-        assembly {
-            // Load the first 32 bytes of the data array, then mask away unwanted bytes
-            selector := and(mload(add(memoryData, 0x20)), 0xFFFFFFFF00000000000000000000000000000000000000000000000000000000)
+        if (memoryData.length >= 4) {
+            selector = bytes4(abi.encodePacked(
+                memoryData[0], memoryData[1], memoryData[2], memoryData[3]
+            ));
         }
 
         // note: the check againts selector != bytes4(0) is not really from the spec, but the BaseAccount will return fund

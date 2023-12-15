@@ -51,7 +51,34 @@ library EIP4337Check {
             console2.log("Breaching Call Limitation (validateUserOp)");
             return false;
         }
+        if (!validateExtcodeMayNotAccessAddressWithoutCode(senderSteps)) {
+            console2.log("EXTCODEHASH, EXTCODELENGTH, EXTCODECOPY may not access address with no code");
+            return false;
+        }
 
+        return true;
+    }
+
+    /**
+     * May not invokes any forbidden opcodes
+     * Must not use GAS opcode (unless followed immediately by one of { CALL, DELEGATECALL, CALLCODE, STATICCALL }.)
+     */
+    function validateForbiddenOpcodes(Vm.DebugStep[] memory debugSteps) private pure returns (bool) {
+        for (uint256 i = 0; i < debugSteps.length; i++) {
+            uint8 opcode = debugSteps[i].opcode;
+            if (isForbiddenOpcode(opcode)) {
+                // exception case for GAS opcode
+                if (opcode == 0x5A && i < debugSteps.length -1) {
+                    if (!isValidNextOpcodeOfGas(debugSteps[i+1].opcode)) {
+                        console2.log("fobidden GAS op-code, next opcode: ", debugSteps[i+1].opcode, "depth: ", debugSteps[i].depth);
+                        return false;
+                    }
+                } else {
+                    console2.log("fobidden op-code: ", opcode, "depth: ", debugSteps[i].depth);
+                    return false;
+                }
+            }
+        }
         return true;
     }
 
@@ -76,7 +103,7 @@ library EIP4337Check {
                 return false;
             }
 
-            // we only care about OPCODES related to calls
+            // we only care about OPCODES related to calls, so filter out those unrelated.
             uint8 op = debugSteps[i].opcode;
             if (op != 0xF1 /*CALL*/
                 && op != 0xF2 /*CALLCODE*/
@@ -90,7 +117,7 @@ library EIP4337Check {
                 console2.log("must not use value (except from account to the entrypoint)");
                 return false;
             }
-            if (!isPrecompile(debugSteps[i]) && isEmptyCode(debugSteps[i])) {
+            if (!isPrecompile(debugSteps[i]) && isCallWithEmptyCode(debugSteps[i])) {
                 address dest = address(uint160(debugSteps[i].stack[1]));
                 console2.log("destination address must have code or be precompile: ", dest, op);
                 return false;
@@ -103,24 +130,19 @@ library EIP4337Check {
         return true;
     }
 
-    /**
-     * May not invokes any forbidden opcodes
-     * Must not use GAS opcode (unless followed immediately by one of { CALL, DELEGATECALL, CALLCODE, STATICCALL }.)
-     */
-    function validateForbiddenOpcodes(Vm.DebugStep[] memory debugSteps) private pure returns (bool) {
+    function validateExtcodeMayNotAccessAddressWithoutCode(
+        Vm.DebugStep[] memory debugSteps
+    ) private view returns (bool) {
         for (uint256 i = 0; i < debugSteps.length; i++) {
-            uint8 opcode = debugSteps[i].opcode;
-            if (isForbiddenOpcode(opcode)) {
-                // exception case for GAS opcode
-                if (opcode == 0x5A && i < debugSteps.length -1) {
-                    if (!isValidNextOpcodeOfGas(debugSteps[i+1].opcode)) {
-                        console2.log("fobidden GAS op-code, next opcode: ", debugSteps[i+1].opcode, "depth: ", debugSteps[i].depth);
-                        return false;
-                    }
-                } else {
-                    console2.log("fobidden op-code: ", opcode, "depth: ", debugSteps[i].depth);
-                    return false;
-                }
+            uint8 op = debugSteps[i].opcode;
+            // EXTCODEHASH, EXTCODELENGTH, EXTCODECOPY
+            if (op != 0x3B && op != 0x3C && op != 0x3F) {
+                continue;
+            }
+
+            address addr = address(uint160(debugSteps[i].stack[0]));
+            if (isEmptyCodeAddress(addr)) {
+                return false;
             }
         }
         return true;
@@ -169,23 +191,14 @@ library EIP4337Check {
     }
 
     function isCallOutOfGas(Vm.DebugStep memory debugStep) private pure returns (bool) {
-        // https://github.com/bluealloy/revm/blob/5a47ae0d2bb0909cc70d1b8ae2b6fc721ab1ca7d/crates/interpreter/src/instruction_result.rs#L23
-        if (debugStep.instructionResult != 0x00) {
-            console2.log("[isCallOutOfGas] instructionResult: ", debugStep.instructionResult);
-            console2.log("[isCallOutOfGas] depth: ", debugStep.depth);
-        }
-        return debugStep.instructionResult == 0x50;
+        // https://github.com/bluealloy/revm/blob/5a47ae0d2bb0909cc70d1b8ae2b6fc721ab1ca7d/crates/interpreter/src/instruction_result.rs#L23-L27
+        return debugStep.instructionResult >= 0x50 && debugStep.instructionResult <= 0x54;
     }
 
-    function isEmptyCode(Vm.DebugStep memory debugStep) private view returns (bool) {
+    function isCallWithEmptyCode(Vm.DebugStep memory debugStep) private view returns (bool) {
         address dest = address(uint160(debugStep.stack[1]));
 
-        uint256 size;
-        assembly {
-            size := extcodesize(dest)
-        }
-
-        return size == 0;
+        return isEmptyCodeAddress(dest);
     }
 
     function isPrecompile(Vm.DebugStep memory debugStep) private pure returns (bool) {
@@ -222,5 +235,14 @@ library EIP4337Check {
         }
 
         return false;
+    }
+
+    function isEmptyCodeAddress(address addr) private view returns (bool) {
+        uint256 size;
+        assembly {
+            size := extcodesize(addr)
+        }
+
+        return size == 0;
     }
 }
